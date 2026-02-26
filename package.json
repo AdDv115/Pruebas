@@ -22,5 +22,8 @@
   },
   "devDependencies": {
     "serve": "^14.2.5"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
