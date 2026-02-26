@@ -3,9 +3,6 @@
   "functions": {
     "api/**/*.js": {
       "runtime": "@vercel/node@3.2.9"
-    },
-    "api/**/*.ts": {
-      "runtime": "@vercel/node@3.2.9"
     }
   }
 }
