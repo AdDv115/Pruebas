@@ -124,13 +124,13 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-/* function startServer() {
+function startServer() {
   const PORT = process.env.PORT || 4000;
   return app.listen(PORT, () => {
     console.log(`PAILAPP API en http://localhost:${PORT}`);
     console.log(`http://localhost:${PORT}/`);
   });
-} */
+}
 
 if (process.env.VERCEL !== "1") {
   process.on("SIGINT", async () => {

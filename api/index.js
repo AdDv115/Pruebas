@@ -1,3 +1,5 @@
+import app from "../src/server/api.js";
+
 export default function handler(req, res) {
-     return myApp(req, res); 
+  return app(req, res);
 }
