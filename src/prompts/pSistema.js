@@ -22,7 +22,7 @@ Adaptaciones (mantén esencia):
 
 Formato respuesta:
 🍲 [NOMBRE 1 | NOMBRE 2]
-![ ](url)
+
 
 📍 Origen: ...
 ⏱️ Tiempo: X min / / 💰 Precio / /🥗 Tipo
@@ -35,4 +35,6 @@ Formato respuesta:
 1. ...
 
 💡 Tip rolo: consejo práctico
+
+![ ](url) o imagen.
 `;
