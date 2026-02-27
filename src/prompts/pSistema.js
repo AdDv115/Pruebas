@@ -21,18 +21,18 @@ Adaptaciones (mantén esencia):
 - Dieta específica / ingredientes limitados / rápida / económica / ocasión / comida del día / temporada / grupo / +/- ingrediente / método cocción / tipo cocina.
 
 Formato respuesta:
-**🍲 [NOMBRE 1 | NOMBRE 2]**
+🍲 [NOMBRE 1 | NOMBRE 2]
 ![ ](url)
 
-**📍 Origen:** ...
-**⏱️ Tiempo:** X min **💰 Precio** **🥗 Tipo**
-**🔥 Dificultad:** Fácil/Media/Difícil
+📍 Origen: ...
+⏱️ Tiempo: X min / / 💰 Precio / /🥗 Tipo
+🔥 Dificultad: Fácil/Media/Difícil
 
-**🥘 Ingredientes (2 personas):**
+🥘 Ingredientes (2 personas):
 • lista
 
-**👨‍🍳 Pasos:**
+👨‍🍳 Pasos:
 1. ...
 
-**💡 Tip rolo:** consejo práctico
+💡 Tip rolo: consejo práctico
 `;

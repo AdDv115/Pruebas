@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import rateLimit from "express-rate-limit";
 import { Agente } from "../Agente/agente.js";
 import { conectarDB } from "../db/mongo.js";
 
@@ -12,7 +11,7 @@ const app = express();
 // Middlewares
 app.use(
   cors({
-    // Para pruebas móviles/web (incluyendo Vercel/Tailscale) reflejamos el origin.
+    
     origin: true,
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
@@ -21,14 +20,6 @@ app.use(
 );
 
 app.use(express.json({ limit: "10mb" }));
-
-
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 100, 
-  message: "Demasiadas peticiones, intenta más tarde"
-});
-app.use("/api/", limiter);
 
 
 app.get("/", async (req, res) => {
@@ -51,7 +42,6 @@ app.get("/", async (req, res) => {
   }
 });
 
-// Chat endpoint mejorado
 app.post("/api/chat", async (req, res) => {
   try {
     if (!db) {
@@ -134,13 +124,13 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-function startServer() {
+/* function startServer() {
   const PORT = process.env.PORT || 4000;
   return app.listen(PORT, () => {
     console.log(`PAILAPP API en http://localhost:${PORT}`);
     console.log(`http://localhost:${PORT}/`);
   });
-}
+} */
 
 if (process.env.VERCEL !== "1") {
   process.on("SIGINT", async () => {
