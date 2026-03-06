@@ -3,7 +3,7 @@ import { pSistema } from "../prompts/pSistema.js";
 import { pLogica } from "../prompts/pLogica.js";
 import { pRules } from "../prompts/pRules.js";
 
-const MODELO = "gemini-3-flash-preview";
+const MODELO = "gemini-2.5-flash-native-audio-preview-12-2025";
 const RESPUESTA_MARKER = "RESPUESTA:";
 
 function buildPrompt(
