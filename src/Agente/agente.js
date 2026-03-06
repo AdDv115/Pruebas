@@ -3,7 +3,12 @@ import { pSistema } from "../prompts/pSistema.js";
 import { pLogica } from "../prompts/pLogica.js";
 import { pRules } from "../prompts/pRules.js";
 
-const MODELO = "gemini-2.5-flash-native-audio-preview-12-2025";
+const MODELOS_FALLBACK = [
+  process.env.GEMINI_MODEL,
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+].filter((v, i, arr) => Boolean(v) && arr.indexOf(v) === i);
 const RESPUESTA_MARKER = "RESPUESTA:";
 
 function buildPrompt(
@@ -44,6 +49,58 @@ function extractRespuesta(texto = "") {
   return limpio.slice(indice + RESPUESTA_MARKER.length).trim();
 }
 
+function isModelNotSupportedError(error) {
+  const status = error?.status;
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    status === 404 ||
+    message.includes("not found") ||
+    message.includes("not supported for generatecontent")
+  );
+}
+
+async function generateWithFallback(prompt) {
+  let lastError = null;
+  for (const model of MODELOS_FALLBACK) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      });
+      return { response, model };
+    } catch (error) {
+      lastError = error;
+      if (!isModelNotSupportedError(error)) {
+        throw error;
+      }
+      console.warn(`Modelo no disponible para generateContent: ${model}`);
+    }
+  }
+
+  throw lastError || new Error("No hay modelos compatibles disponibles");
+}
+
+async function generateStreamWithFallback(prompt) {
+  let lastError = null;
+  for (const model of MODELOS_FALLBACK) {
+    try {
+      const stream = await ai.models.generateContentStream({
+        model,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      });
+      return { stream, model };
+    } catch (error) {
+      lastError = error;
+      if (!isModelNotSupportedError(error)) {
+        throw error;
+      }
+      console.warn(`Modelo no disponible para generateContentStream: ${model}`);
+    }
+  }
+
+  throw lastError || new Error("No hay modelos compatibles disponibles para stream");
+}
+
 export async function Agente(
   mensajeUser,
   tipoUsuario = "free",
@@ -57,10 +114,7 @@ export async function Agente(
     esPrimeraCharla,
   );
 
-  const respuesta = await ai.models.generateContent({
-    model: MODELO,
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-  });
+  const { response: respuesta } = await generateWithFallback(prompt);
 
   const candidate = respuesta.candidates?.[0];
   if (!candidate) {
@@ -88,10 +142,7 @@ export async function* AgenteStream(
     historial,
     esPrimeraCharla,
   );
-  const stream = await ai.models.generateContentStream({
-    model: MODELO,
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-  });
+  const { stream } = await generateStreamWithFallback(prompt);
 
   let raw = "";
   let emitted = 0;
