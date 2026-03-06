@@ -10,6 +10,8 @@ const MODELOS_FALLBACK = [
   "gemini-1.5-flash",
 ].filter((v, i, arr) => Boolean(v) && arr.indexOf(v) === i);
 const RESPUESTA_MARKER = "RESPUESTA:";
+const MAX_RETRIES_PER_MODEL = 2;
+const RETRY_BASE_MS = 350;
 
 function buildPrompt(
   mensajeUser,
@@ -59,21 +61,52 @@ function isModelNotSupportedError(error) {
   );
 }
 
+function isTransientModelError(error) {
+  const status = error?.status;
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    status === 429 ||
+    status === 500 ||
+    status === 503 ||
+    message.includes("high demand") ||
+    message.includes("unavailable") ||
+    message.includes("resource exhausted")
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function generateWithFallback(prompt) {
   let lastError = null;
   for (const model of MODELOS_FALLBACK) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-      });
-      return { response, model };
-    } catch (error) {
-      lastError = error;
-      if (!isModelNotSupportedError(error)) {
+    for (let attempt = 0; attempt <= MAX_RETRIES_PER_MODEL; attempt += 1) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+        });
+        return { response, model };
+      } catch (error) {
+        lastError = error;
+
+        if (isModelNotSupportedError(error)) {
+          console.warn(`Modelo no disponible para generateContent: ${model}`);
+          break;
+        }
+
+        if (isTransientModelError(error) && attempt < MAX_RETRIES_PER_MODEL) {
+          const waitMs = RETRY_BASE_MS * (attempt + 1);
+          console.warn(
+            `Gemini transient error (${model}) intento ${attempt + 1}/${MAX_RETRIES_PER_MODEL + 1}. Reintentando en ${waitMs}ms`,
+          );
+          await sleep(waitMs);
+          continue;
+        }
+
         throw error;
       }
-      console.warn(`Modelo no disponible para generateContent: ${model}`);
     }
   }
 
@@ -83,18 +116,32 @@ async function generateWithFallback(prompt) {
 async function generateStreamWithFallback(prompt) {
   let lastError = null;
   for (const model of MODELOS_FALLBACK) {
-    try {
-      const stream = await ai.models.generateContentStream({
-        model,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-      });
-      return { stream, model };
-    } catch (error) {
-      lastError = error;
-      if (!isModelNotSupportedError(error)) {
+    for (let attempt = 0; attempt <= MAX_RETRIES_PER_MODEL; attempt += 1) {
+      try {
+        const stream = await ai.models.generateContentStream({
+          model,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+        });
+        return { stream, model };
+      } catch (error) {
+        lastError = error;
+
+        if (isModelNotSupportedError(error)) {
+          console.warn(`Modelo no disponible para generateContentStream: ${model}`);
+          break;
+        }
+
+        if (isTransientModelError(error) && attempt < MAX_RETRIES_PER_MODEL) {
+          const waitMs = RETRY_BASE_MS * (attempt + 1);
+          console.warn(
+            `Gemini transient stream error (${model}) intento ${attempt + 1}/${MAX_RETRIES_PER_MODEL + 1}. Reintentando en ${waitMs}ms`,
+          );
+          await sleep(waitMs);
+          continue;
+        }
+
         throw error;
       }
-      console.warn(`Modelo no disponible para generateContentStream: ${model}`);
     }
   }
 
