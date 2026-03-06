@@ -1,7 +1,7 @@
 // Carga el cliente oficial de Gemini para Node
 import { GoogleGenAI } from "@google/genai";
 
-const apiKey = process.env.GEMINI_API_KEY2;
+const apiKey = process.env.GEMINI_API_KEY;
 
 //Si no encuentra la API, tira error
 if (!apiKey) {
