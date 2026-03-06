@@ -1,7 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { Agente } from "../Agente/agente.js";
+import { Agente, AgenteStream } from "../Agente/agente.js";
 import { conectarDB } from "../db/mongo.js";
 
 let db;
@@ -21,12 +21,55 @@ app.use(
 
 app.use(express.json({ limit: "10mb" }));
 
+async function getDB() {
+  if (!db) {
+    db = await conectarDB();
+  }
+  return db;
+}
+
+function getUserId(tipoUsuario = "free") {
+  return String(tipoUsuario || "free");
+}
+
+async function cargarConversacion(database, userId) {
+  const conversacion = await database.collection("conversaciones").findOne({ userId });
+  return conversacion || { userId, mensajes: [] };
+}
+
+async function guardarConversacion(database, userId, mensajes) {
+  const mensajesRecortados = mensajes.length > 20 ? mensajes.slice(-20) : mensajes;
+
+  await database.collection("conversaciones").updateOne(
+    { userId },
+    {
+      $set: {
+        userId,
+        mensajes: mensajesRecortados,
+        ultimaActualizacion: new Date(),
+        totalMensajes: mensajesRecortados.length,
+      },
+    },
+    { upsert: true },
+  );
+
+  return mensajesRecortados;
+}
+
+function validarMensaje(mensaje) {
+  if (!mensaje || typeof mensaje !== "string") return false;
+  const trimmed = mensaje.trim();
+  return trimmed.length >= 1 && trimmed.length <= 2000;
+}
+
+function sseSend(res, event, payload) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
 
 app.get("/", async (req, res) => {
   try {
-    if (!db) {
-      db = await conectarDB();
-    }
+    await getDB();
     res.json({ 
       status: "OK", 
       mongo: !!db,
@@ -44,37 +87,28 @@ app.get("/", async (req, res) => {
 
 app.post("/api/chat", async (req, res) => {
   try {
-    if (!db) {
-      db = await conectarDB();
-    }
-
     const { mensaje, tipoUsuario = "free" } = req.body;
 
-    // Validaciones
-    if (!mensaje || mensaje.trim().length < 1 || mensaje.length > 2000) {
+    if (!validarMensaje(mensaje)) {
       return res.status(400).json({ 
         error: "Mensaje inválido (1-2000 caracteres)" 
       });
     }
 
-    const userId = tipoUsuario;
+    const database = await getDB();
+    const userId = getUserId(tipoUsuario);
     const trimmedMessage = mensaje.trim();
 
-    // Obtener conversación
-    const conversacion = await db.collection("conversaciones").findOne({ 
-      userId 
-    }) || { mensajes: [] };
+    const conversacion = await cargarConversacion(database, userId);
 
     const esPrimerMensaje = conversacion.mensajes.length === 0;
 
-    // Agregar mensaje usuario
     conversacion.mensajes.push({ 
       role: "user", 
       content: trimmedMessage,
       timestamp: new Date()
     });
 
-    // Llamar agente
     const respuesta = await Agente(
       trimmedMessage, 
       tipoUsuario, 
@@ -82,37 +116,23 @@ app.post("/api/chat", async (req, res) => {
       esPrimerMensaje
     );
 
-    // Agregar respuesta AI
     conversacion.mensajes.push({ 
       role: "assistant", 
       content: respuesta,
       timestamp: new Date()
     });
 
-    // Mantener solo últimas 20 interacciones
-    if (conversacion.mensajes.length > 20) {
-      conversacion.mensajes = conversacion.mensajes.slice(-20);
-    }
-
-    // Guardar en DB
-    await db.collection("conversaciones").updateOne(
-      { userId },
-      { 
-        $set: { 
-          userId, 
-          mensajes: conversacion.mensajes,
-          ultimaActualizacion: new Date(),
-          totalMensajes: conversacion.mensajes.length
-        } 
-      },
-      { upsert: true }
+    const mensajesGuardados = await guardarConversacion(
+      database,
+      userId,
+      conversacion.mensajes,
     );
 
     res.json({ 
       respuesta, 
       tipoUsuario, 
       esPrimerMensaje,
-      totalMensajes: conversacion.mensajes.length
+      totalMensajes: mensajesGuardados.length,
     });
 
   } catch (err) {
@@ -121,6 +141,85 @@ app.post("/api/chat", async (req, res) => {
       error: "Error interno del servidor",
       details: process.env.NODE_ENV === "development" ? err.message : undefined
     });
+  }
+});
+
+app.post("/api/chat/stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+
+  try {
+    const { mensaje, tipoUsuario = "free" } = req.body || {};
+    if (!validarMensaje(mensaje)) {
+      sseSend(res, "error", { error: "Mensaje inválido (1-2000 caracteres)" });
+      res.end();
+      return;
+    }
+
+    const database = await getDB();
+    const userId = getUserId(tipoUsuario);
+    const trimmedMessage = mensaje.trim();
+    const conversacion = await cargarConversacion(database, userId);
+    const esPrimerMensaje = conversacion.mensajes.length === 0;
+
+    conversacion.mensajes.push({
+      role: "user",
+      content: trimmedMessage,
+      timestamp: new Date(),
+    });
+
+    let respuestaFinal = "";
+    let firstChunkSent = false;
+
+    sseSend(res, "meta", { esPrimerMensaje });
+
+    for await (const delta of AgenteStream(
+      trimmedMessage,
+      tipoUsuario,
+      conversacion.mensajes,
+      esPrimerMensaje,
+    )) {
+      if (!delta) continue;
+      respuestaFinal += delta;
+      firstChunkSent = true;
+      sseSend(res, "chunk", { delta });
+    }
+
+    if (!firstChunkSent || !respuestaFinal.trim()) {
+      throw new Error("El agente no devolvió contenido");
+    }
+
+    conversacion.mensajes.push({
+      role: "assistant",
+      content: respuestaFinal,
+      timestamp: new Date(),
+    });
+
+    const mensajesGuardados = await guardarConversacion(
+      database,
+      userId,
+      conversacion.mensajes,
+    );
+
+    sseSend(res, "done", {
+      respuesta: respuestaFinal,
+      tipoUsuario,
+      esPrimerMensaje,
+      totalMensajes: mensajesGuardados.length,
+    });
+    res.end();
+  } catch (err) {
+    console.error("Chat stream error:", err);
+    sseSend(res, "error", {
+      error: "Error interno del servidor",
+      details: process.env.NODE_ENV === "development" ? err.message : undefined,
+    });
+    res.end();
   }
 });
 
