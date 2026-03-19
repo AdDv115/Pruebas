@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import { Readable } from "node:stream";
 import { Agente, AgenteStream } from "../Agente/agente.js";
 import { conectarDB } from "../db/mongo.js";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
@@ -16,6 +17,7 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
+app.use("/api/tts", express.text({ type: "*/*", limit: "50mb" }));
 app.use(express.json({ limit: "50mb" }));
 
 async function getDB() {
@@ -58,6 +60,29 @@ function validarMensaje(mensaje) {
 function sseSend(res, event, payload) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function parseTtsBody(body) {
+  if (typeof body === "string") {
+    const trimmed = body.trim();
+    if (!trimmed) return {};
+
+    if (trimmed.startsWith("{")) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        return { text: trimmed };
+      }
+    }
+
+    return { text: trimmed };
+  }
+
+  if (body && typeof body === "object") {
+    return body;
+  }
+
+  return {};
 }
 
 app.get("/", async (req, res) => {
@@ -147,23 +172,48 @@ app.post("/api/chat/stream", async (req, res) => {
 
 app.post("/api/tts", async (req, res) => {
   try {
-    const { text, voiceId = '21m00Tcm4TlvDq8ikWAM' } = req.body;
-    if (!text || text.length > 5000) {
+    const { text, voiceId = "21m00Tcm4TlvDq8ikWAM" } = parseTtsBody(req.body);
+    if (!text || typeof text !== "string" || text.length > 5000) {
       return res.status(400).json({ error: "Texto inválido" });
     }
 
-    const audio = await elevenlabs.textToSpeech.convert({
-      text,
-      voice: { voice_id: voiceId },
-      model_id: 'eleven_turbo_v2_5'
+    if (!process.env.ELEVENLABS_API_KEY) {
+      return res.status(500).json({ error: "Falta ELEVENLABS_API_KEY" });
+    }
+
+    const audioStream = await elevenlabs.textToSpeech.convert(voiceId, {
+      text: text.trim(),
+      modelId: "eleven_turbo_v2_5",
+      outputFormat: "mp3_44100_128",
     });
 
-    res.set({ 'Content-Type': 'audio/mpeg' });
-    audio.pipe(res);
+    const nodeStream = Readable.fromWeb(audioStream);
+    const chunks = [];
+    for await (const chunk of nodeStream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const audioBuffer = Buffer.concat(chunks);
+
+    res.set({
+      "Content-Type": "audio/mpeg",
+      "Content-Length": audioBuffer.length,
+      "Cache-Control": "no-store",
+    });
+    res.send(audioBuffer);
   } catch (err) {
     console.error("TTS error:", err);
-    res.status(500).json({ error: "Error TTS" });
+    res.status(500).json({ error: err?.message || "Error TTS" });
   }
+});
+
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && "body" in err) {
+    return res.status(400).json({
+      error: "JSON inválido",
+      detalle: "Envia un objeto JSON como {\"text\":\"hola\"} o texto plano en el body para /api/tts",
+    });
+  }
+  next(err);
 });
 
 app.post("/api/get-token", async (req, res) => {
