@@ -172,7 +172,7 @@ app.post("/api/chat/stream", async (req, res) => {
 
 app.post("/api/tts", async (req, res) => {
   try {
-    const { text, voiceId = "21m00Tcm4TlvDq8ikWAM" } = parseTtsBody(req.body);
+    const { text, voiceId = "86V9x9hrQds83qf7zaGn" } = parseTtsBody(req.body);
     if (!text || typeof text !== "string" || text.length > 5000) {
       return res.status(400).json({ error: "Texto inválido" });
     }
