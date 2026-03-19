@@ -195,11 +195,14 @@ app.post("/api/tts", async (req, res) => {
     const audioBuffer = Buffer.concat(chunks);
 
     res.set({
-      "Content-Type": "audio/mpeg",
-      "Content-Length": audioBuffer.length,
+      "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
     });
-    res.send(audioBuffer);
+    res.json({
+      audioBase64: audioBuffer.toString("base64"),
+      mimeType: "audio/mpeg",
+      voiceId,
+    });
   } catch (err) {
     console.error("TTS error:", err);
     res.status(500).json({ error: err?.message || "Error TTS" });
