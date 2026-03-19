@@ -3,10 +3,9 @@ import express from "express";
 import cors from "cors";
 import { Agente, AgenteStream } from "../Agente/agente.js";
 import { conectarDB } from "../db/mongo.js";
-import { ElevenLabs } from "elevenlabs";
-
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 let db;
-const elevenlabs = new ElevenLabs({ apiKey: process.env.ELEVENLABS_API_KEY });
+const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
 const app = express();
 
