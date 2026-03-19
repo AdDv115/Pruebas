@@ -6,27 +6,21 @@ import { conectarDB } from "../db/mongo.js";
 import { ElevenLabs } from "elevenlabs";
 
 let db;
-const elevenlabs = new ElevenLabs({ apiKey: process.env.ELEVENLABS_API_KEY})
+const elevenlabs = new ElevenLabs({ apiKey: process.env.ELEVENLABS_API_KEY });
 
 const app = express();
 
-// Middlewares
-app.use(
-  cors({
-    
-    origin: true,
-    credentials: true,
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  }),
-);
+app.use(cors({
+  origin: true,
+  credentials: true,
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
 
 app.use(express.json({ limit: "50mb" }));
 
 async function getDB() {
-  if (!db) {
-    db = await conectarDB();
-  }
+  if (!db) db = await conectarDB();
   return db;
 }
 
@@ -41,7 +35,6 @@ async function cargarConversacion(database, userId) {
 
 async function guardarConversacion(database, userId, mensajes) {
   const mensajesRecortados = mensajes.length > 20 ? mensajes.slice(-20) : mensajes;
-
   await database.collection("conversaciones").updateOne(
     { userId },
     {
@@ -52,9 +45,8 @@ async function guardarConversacion(database, userId, mensajes) {
         totalMensajes: mensajesRecortados.length,
       },
     },
-    { upsert: true },
+    { upsert: true }
   );
-
   return mensajesRecortados;
 }
 
@@ -72,77 +64,35 @@ function sseSend(res, event, payload) {
 app.get("/", async (req, res) => {
   try {
     await getDB();
-    res.json({ 
-      status: "OK", 
-      mongo: !!db,
-      message: "PAILAPP API corriendo" 
-    });
+    res.json({ status: "OK", mongo: !!db, message: "PAILAPP API corriendo" });
   } catch (err) {
     console.error("Mongo error:", err.message);
-    res.status(503).json({ 
-      status: "API OK", 
-      mongo: false,
-      message: "MongoDB no disponible"
-    });
+    res.status(503).json({ status: "API OK", mongo: false, message: "MongoDB no disponible" });
   }
 });
 
 app.post("/api/chat", async (req, res) => {
   try {
     const { mensaje, tipoUsuario = "free" } = req.body;
-
     if (!validarMensaje(mensaje)) {
-      return res.status(400).json({ 
-        error: "Mensaje inválido (1-2000 caracteres)" 
-      });
+      return res.status(400).json({ error: "Mensaje inválido (1-2000 caracteres)" });
     }
 
     const database = await getDB();
     const userId = getUserId(tipoUsuario);
     const trimmedMessage = mensaje.trim();
-
     const conversacion = await cargarConversacion(database, userId);
-
     const esPrimerMensaje = conversacion.mensajes.length === 0;
 
-    conversacion.mensajes.push({ 
-      role: "user", 
-      content: trimmedMessage,
-      timestamp: new Date()
-    });
+    conversacion.mensajes.push({ role: "user", content: trimmedMessage, timestamp: new Date() });
+    const respuesta = await Agente(trimmedMessage, tipoUsuario, conversacion.mensajes, esPrimerMensaje);
+    conversacion.mensajes.push({ role: "assistant", content: respuesta, timestamp: new Date() });
+    const mensajesGuardados = await guardarConversacion(database, userId, conversacion.mensajes);
 
-    const respuesta = await Agente(
-      trimmedMessage, 
-      tipoUsuario, 
-      conversacion.mensajes, 
-      esPrimerMensaje
-    );
-
-    conversacion.mensajes.push({ 
-      role: "assistant", 
-      content: respuesta,
-      timestamp: new Date()
-    });
-
-    const mensajesGuardados = await guardarConversacion(
-      database,
-      userId,
-      conversacion.mensajes,
-    );
-
-    res.json({ 
-      respuesta, 
-      tipoUsuario, 
-      esPrimerMensaje,
-      totalMensajes: mensajesGuardados.length,
-    });
-
+    res.json({ respuesta, tipoUsuario, esPrimerMensaje, totalMensajes: mensajesGuardados.length });
   } catch (err) {
     console.error("Chat endpoint error:", err);
-    res.status(500).json({ 
-      error: "Error interno del servidor",
-      details: process.env.NODE_ENV === "development" ? err.message : undefined
-    });
+    res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 
@@ -151,9 +101,7 @@ app.post("/api/chat/stream", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
-  if (typeof res.flushHeaders === "function") {
-    res.flushHeaders();
-  }
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
 
   try {
     const { mensaje, tipoUsuario = "free" } = req.body || {};
@@ -169,23 +117,13 @@ app.post("/api/chat/stream", async (req, res) => {
     const conversacion = await cargarConversacion(database, userId);
     const esPrimerMensaje = conversacion.mensajes.length === 0;
 
-    conversacion.mensajes.push({
-      role: "user",
-      content: trimmedMessage,
-      timestamp: new Date(),
-    });
-
+    conversacion.mensajes.push({ role: "user", content: trimmedMessage, timestamp: new Date() });
     let respuestaFinal = "";
     let firstChunkSent = false;
 
     sseSend(res, "meta", { esPrimerMensaje });
 
-    for await (const delta of AgenteStream(
-      trimmedMessage,
-      tipoUsuario,
-      conversacion.mensajes,
-      esPrimerMensaje,
-    )) {
+    for await (const delta of AgenteStream(trimmedMessage, tipoUsuario, conversacion.mensajes, esPrimerMensaje)) {
       if (!delta) continue;
       respuestaFinal += delta;
       firstChunkSent = true;
@@ -196,55 +134,38 @@ app.post("/api/chat/stream", async (req, res) => {
       throw new Error("El agente no devolvió contenido");
     }
 
-    conversacion.mensajes.push({
-      role: "assistant",
-      content: respuestaFinal,
-      timestamp: new Date(),
-    });
+    conversacion.mensajes.push({ role: "assistant", content: respuestaFinal, timestamp: new Date() });
+    const mensajesGuardados = await guardarConversacion(database, userId, conversacion.mensajes);
 
-    const mensajesGuardados = await guardarConversacion(
-      database,
-      userId,
-      conversacion.mensajes,
-    );
-
-    sseSend(res, "done", {
-      respuesta: respuestaFinal,
-      tipoUsuario,
-      esPrimerMensaje,
-      totalMensajes: mensajesGuardados.length,
-    });
+    sseSend(res, "done", { respuesta: respuestaFinal, tipoUsuario, esPrimerMensaje, totalMensajes: mensajesGuardados.length });
     res.end();
   } catch (err) {
     console.error("Chat stream error:", err);
-    sseSend(res, "error", {
-      error: "Error interno del servidor",
-      details: process.env.NODE_ENV === "development" ? err.message : undefined,
-    });
+    sseSend(res, "error", { error: "Error interno del servidor" });
     res.end();
   }
 });
 
 app.post("/api/tts", async (req, res) => {
   try {
-    const {text, voice = '21m00Tcm4TlvDq8ikWAM' } = req.body;
-    if (!text || text.length > 5000)
-      
-      return res.status(400).json({ error: "Texto invalido" });
+    const { text, voiceId = '21m00Tcm4TlvDq8ikWAM' } = req.body;
+    if (!text || text.length > 5000) {
+      return res.status(400).json({ error: "Texto inválido" });
+    }
 
-      const audio = await elevenlabs.textToSpeech.convert({
-        text,
-        voice: { voice_id: voiceId },
-        model_id: 'eleven_turbo_v2_5'
-      });
+    const audio = await elevenlabs.textToSpeech.convert({
+      text,
+      voice: { voice_id: voiceId },
+      model_id: 'eleven_turbo_v2_5'
+    });
 
-      res.set({ 'Content-Type': 'audio/mpeg'});
-  
+    res.set({ 'Content-Type': 'audio/mpeg' });
+    audio.pipe(res);
   } catch (err) {
     console.error("TTS error:", err);
     res.status(500).json({ error: "Error TTS" });
   }
-}); 
+});
 
 app.post("/api/get-token", async (req, res) => {
   try {
@@ -277,19 +198,14 @@ function startServer() {
   const PORT = process.env.PORT || 4000;
   return app.listen(PORT, () => {
     console.log(`PAILAPP API en http://localhost:${PORT}`);
-    console.log(`http://localhost:${PORT}/`);
   });
 }
 
 if (process.env.VERCEL !== "1") {
-  process.on("SIGINT", async () => {
-    console.log("\n Cerrando servidor...");
-    if (db) {
-      console.log("MongoDB conexión cerrada");
-    }
+  process.on("SIGINT", () => {
+    console.log("\nCerrando servidor...");
     process.exit(0);
   });
-
   startServer();
 }
 
