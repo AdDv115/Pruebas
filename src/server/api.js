@@ -2,93 +2,121 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { Readable } from "node:stream";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { Agente, AgenteStream } from "../Agente/agente.js";
 import { conectarDB } from "../db/mongo.js";
-import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
-let db;
-const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
 const app = express();
+const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
+let db;
+
+// Configuracion general del servidor y limites del body.
 app.use(cors({
   origin: true,
   credentials: true,
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
-
 app.use("/api/tts", express.text({ type: "*/*", limit: "50mb" }));
 app.use(express.json({ limit: "50mb" }));
 
+// Reutiliza una sola conexion a Mongo para todas las peticiones.
 async function getDB() {
-  if (!db) db = await conectarDB();
+  db ??= await conectarDB();
   return db;
 }
 
-function getUserId(tipoUsuario = "free") {
+// Normaliza el tipo de usuario para usarlo como identificador simple.
+function getUserId(tipoUsuario) {
   return String(tipoUsuario || "free");
 }
 
-async function cargarConversacion(database, userId) {
-  const conversacion = await database.collection("conversaciones").findOne({ userId });
-  return conversacion || { userId, mensajes: [] };
+// Comprueba que el mensaje exista y no sea demasiado largo.
+function esMensajeValido(mensaje) {
+  return typeof mensaje === "string" && mensaje.trim().length >= 1 && mensaje.trim().length <= 2000;
 }
 
-async function guardarConversacion(database, userId, mensajes) {
-  const mensajesRecortados = mensajes.length > 20 ? mensajes.slice(-20) : mensajes;
+// Lee la conversacion guardada o crea una vacia si todavia no existe.
+async function getConversacion(tipoUsuario) {
+  const database = await getDB();
+  const userId = getUserId(tipoUsuario);
+  const guardada = await database.collection("conversaciones").findOne({ userId });
+
+  return {
+    database,
+    userId,
+    mensajes: guardada?.mensajes || [],
+  };
+}
+
+// Guarda solo los ultimos mensajes para que la conversacion no crezca sin limite.
+async function saveConversacion(database, userId, mensajes) {
+  const mensajesGuardados = mensajes.slice(-20);
+
   await database.collection("conversaciones").updateOne(
     { userId },
     {
       $set: {
         userId,
-        mensajes: mensajesRecortados,
+        mensajes: mensajesGuardados,
         ultimaActualizacion: new Date(),
-        totalMensajes: mensajesRecortados.length,
+        totalMensajes: mensajesGuardados.length,
       },
     },
     { upsert: true }
   );
-  return mensajesRecortados;
+
+  return mensajesGuardados;
 }
 
-function validarMensaje(mensaje) {
-  if (!mensaje || typeof mensaje !== "string") return false;
-  const trimmed = mensaje.trim();
-  return trimmed.length >= 1 && trimmed.length <= 2000;
+// Agrega un mensaje al historial con el formato que usa el agente.
+function addMensaje(mensajes, role, content) {
+  mensajes.push({ role, content, timestamp: new Date() });
 }
 
-function sseSend(res, event, payload) {
+// Prepara el contexto comun que usan /chat y /chat/stream.
+async function prepararChat(mensaje, tipoUsuario = "free") {
+  if (!esMensajeValido(mensaje)) {
+    return { error: "Mensaje invalido (1-2000 caracteres)" };
+  }
+
+  const texto = mensaje.trim();
+  const conversacion = await getConversacion(tipoUsuario);
+  const esPrimerMensaje = conversacion.mensajes.length === 0;
+
+  addMensaje(conversacion.mensajes, "user", texto);
+
+  return { texto, tipoUsuario, esPrimerMensaje, ...conversacion };
+}
+
+// Envia eventos SSE al cliente para el chat en streaming.
+function sendSSE(res, event, payload) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+// Permite recibir texto plano o JSON en el endpoint de TTS.
 function parseTtsBody(body) {
-  if (typeof body === "string") {
-    const trimmed = body.trim();
-    if (!trimmed) return {};
+  if (!body || typeof body === "object") return body || {};
+  if (typeof body !== "string") return {};
 
-    if (trimmed.startsWith("{")) {
-      try {
-        return JSON.parse(trimmed);
-      } catch {
-        return { text: trimmed };
-      }
-    }
+  const texto = body.trim();
+  if (!texto) return {};
 
-    return { text: trimmed };
+  if (!texto.startsWith("{")) return { text: texto };
+
+  try {
+    return JSON.parse(texto);
+  } catch {
+    return { text: texto };
   }
-
-  if (body && typeof body === "object") {
-    return body;
-  }
-
-  return {};
 }
 
 app.get("/", async (req, res) => {
   try {
     await getDB();
-    res.json({ status: "OK", mongo: !!db, message: "PAILAPP API corriendo" });
+    res.json({ status: "OK", mongo: true, message: "PAILAPP API corriendo" });
   } catch (err) {
     console.error("Mongo error:", err.message);
     res.status(503).json({ status: "API OK", mongo: false, message: "MongoDB no disponible" });
@@ -97,23 +125,24 @@ app.get("/", async (req, res) => {
 
 app.post("/api/chat", async (req, res) => {
   try {
-    const { mensaje, tipoUsuario = "free" } = req.body;
-    if (!validarMensaje(mensaje)) {
-      return res.status(400).json({ error: "Mensaje inválido (1-2000 caracteres)" });
+    const { mensaje, tipoUsuario = "free" } = req.body || {};
+    const chat = await prepararChat(mensaje, tipoUsuario);
+
+    if (chat.error) {
+      return res.status(400).json({ error: chat.error });
     }
 
-    const database = await getDB();
-    const userId = getUserId(tipoUsuario);
-    const trimmedMessage = mensaje.trim();
-    const conversacion = await cargarConversacion(database, userId);
-    const esPrimerMensaje = conversacion.mensajes.length === 0;
+    const respuesta = await Agente(chat.texto, chat.tipoUsuario, chat.mensajes, chat.esPrimerMensaje);
+    addMensaje(chat.mensajes, "assistant", respuesta);
 
-    conversacion.mensajes.push({ role: "user", content: trimmedMessage, timestamp: new Date() });
-    const respuesta = await Agente(trimmedMessage, tipoUsuario, conversacion.mensajes, esPrimerMensaje);
-    conversacion.mensajes.push({ role: "assistant", content: respuesta, timestamp: new Date() });
-    const mensajesGuardados = await guardarConversacion(database, userId, conversacion.mensajes);
+    const mensajesGuardados = await saveConversacion(chat.database, chat.userId, chat.mensajes);
 
-    res.json({ respuesta, tipoUsuario, esPrimerMensaje, totalMensajes: mensajesGuardados.length });
+    res.json({
+      respuesta,
+      tipoUsuario: chat.tipoUsuario,
+      esPrimerMensaje: chat.esPrimerMensaje,
+      totalMensajes: mensajesGuardados.length,
+    });
   } catch (err) {
     console.error("Chat endpoint error:", err);
     res.status(500).json({ error: "Error interno del servidor" });
@@ -121,6 +150,7 @@ app.post("/api/chat", async (req, res) => {
 });
 
 app.post("/api/chat/stream", async (req, res) => {
+  // Estas cabeceras dejan la conexion abierta para enviar texto por partes.
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
@@ -129,52 +159,50 @@ app.post("/api/chat/stream", async (req, res) => {
 
   try {
     const { mensaje, tipoUsuario = "free" } = req.body || {};
-    if (!validarMensaje(mensaje)) {
-      sseSend(res, "error", { error: "Mensaje inválido (1-2000 caracteres)" });
-      res.end();
-      return;
+    const chat = await prepararChat(mensaje, tipoUsuario);
+
+    if (chat.error) {
+      sendSSE(res, "error", { error: chat.error });
+      return res.end();
     }
 
-    const database = await getDB();
-    const userId = getUserId(tipoUsuario);
-    const trimmedMessage = mensaje.trim();
-    const conversacion = await cargarConversacion(database, userId);
-    const esPrimerMensaje = conversacion.mensajes.length === 0;
+    let respuesta = "";
+    sendSSE(res, "meta", { esPrimerMensaje: chat.esPrimerMensaje });
 
-    conversacion.mensajes.push({ role: "user", content: trimmedMessage, timestamp: new Date() });
-    let respuestaFinal = "";
-    let firstChunkSent = false;
-
-    sseSend(res, "meta", { esPrimerMensaje });
-
-    for await (const delta of AgenteStream(trimmedMessage, tipoUsuario, conversacion.mensajes, esPrimerMensaje)) {
+    for await (const delta of AgenteStream(chat.texto, chat.tipoUsuario, chat.mensajes, chat.esPrimerMensaje)) {
       if (!delta) continue;
-      respuestaFinal += delta;
-      firstChunkSent = true;
-      sseSend(res, "chunk", { delta });
+      respuesta += delta;
+      sendSSE(res, "chunk", { delta });
     }
 
-    if (!firstChunkSent || !respuestaFinal.trim()) {
-      throw new Error("El agente no devolvió contenido");
+    if (!respuesta.trim()) {
+      throw new Error("El agente no devolvio contenido");
     }
 
-    conversacion.mensajes.push({ role: "assistant", content: respuestaFinal, timestamp: new Date() });
-    const mensajesGuardados = await guardarConversacion(database, userId, conversacion.mensajes);
+    addMensaje(chat.mensajes, "assistant", respuesta);
+    const mensajesGuardados = await saveConversacion(chat.database, chat.userId, chat.mensajes);
 
-    sseSend(res, "done", { respuesta: respuestaFinal, tipoUsuario, esPrimerMensaje, totalMensajes: mensajesGuardados.length });
+    sendSSE(res, "done", {
+      respuesta,
+      tipoUsuario: chat.tipoUsuario,
+      esPrimerMensaje: chat.esPrimerMensaje,
+      totalMensajes: mensajesGuardados.length,
+    });
     res.end();
   } catch (err) {
     console.error("Chat stream error:", err);
-    sseSend(res, "error", { error: "Error interno del servidor" });
+    sendSSE(res, "error", { error: "Error interno del servidor" });
     res.end();
   }
 });
 
 app.post("/api/tts", async (req, res) => {
   try {
-    const { text, voiceId = "HIGUfNOdjuWQwwapnTRW" } = parseTtsBody(req.body);
-    if (!text || typeof text !== "string" || text.length > 5000) {
-      return res.status(400).json({ error: "Texto inválido" });
+    const { text, voiceId = "pNInz6obpgDQGcFmaJgB" } = parseTtsBody(req.body);
+
+    // Valida el texto antes de pedir audio a ElevenLabs.
+    if (typeof text !== "string" || !text.trim() || text.length > 5000) {
+      return res.status(400).json({ error: "Texto invalido" });
     }
 
     if (!process.env.ELEVENLABS_API_KEY) {
@@ -187,19 +215,18 @@ app.post("/api/tts", async (req, res) => {
       outputFormat: "mp3_44100_128",
     });
 
-    const nodeStream = Readable.fromWeb(audioStream);
+    // Convierte el stream web a Buffer para devolverlo como base64.
     const chunks = [];
-    for await (const chunk of nodeStream) {
+    for await (const chunk of Readable.fromWeb(audioStream)) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-    const audioBuffer = Buffer.concat(chunks);
 
     res.set({
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
     });
     res.json({
-      audioBase64: audioBuffer.toString("base64"),
+      audioBase64: Buffer.concat(chunks).toString("base64"),
       mimeType: "audio/mpeg",
       voiceId,
     });
@@ -209,36 +236,43 @@ app.post("/api/tts", async (req, res) => {
   }
 });
 
+// Captura errores cuando el body llega con JSON mal formado.
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && "body" in err) {
     return res.status(400).json({
-      error: "JSON inválido",
-      detalle: "Envia un objeto JSON como {\"text\":\"hola\"} o texto plano en el body para /api/tts",
+      error: "JSON invalido",
+      detalle: 'Envia {"text":"hola"} o texto plano en el body para /api/tts',
     });
   }
+
   next(err);
 });
 
 app.post("/api/get-token", async (req, res) => {
   try {
-    const { agentId, tipoUsuario = "free" } = req.body;
-    if (!agentId) return res.status(400).json({ error: "Falta agentId" });
+    const { agentId, tipoUsuario = "free" } = req.body || {};
+    if (!agentId) {
+      return res.status(400).json({ error: "Falta agentId" });
+    }
 
+    // Pide un token temporal para usar un agente de ElevenLabs desde el cliente.
     const response = await fetch(`https://api.elevenlabs.io/v1/agents/${agentId}/tokens`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'xi-api-key': process.env.ELEVENLABS_API_KEY,
-        'Content-Type': 'application/json'
+        "xi-api-key": process.env.ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        permissions: ['agent:play', 'agent:speak'],
-        duration_seconds: 3600
-      })
+        permissions: ["agent:play", "agent:speak"],
+        duration_seconds: 3600,
+      }),
     });
 
-    if (!response.ok) throw new Error(`ElevenLabs: ${response.status}`);
-    const { token } = await response.json();
+    if (!response.ok) {
+      throw new Error(`ElevenLabs: ${response.status}`);
+    }
 
+    const { token } = await response.json();
     res.json({ token, agentId, tipoUsuario });
   } catch (err) {
     console.error("Token error:", err);
@@ -248,6 +282,7 @@ app.post("/api/get-token", async (req, res) => {
 
 function startServer() {
   const PORT = process.env.PORT || 4000;
+
   return app.listen(PORT, () => {
     console.log(`PAILAPP API en http://localhost:${PORT}`);
   });
@@ -258,6 +293,7 @@ if (process.env.VERCEL !== "1") {
     console.log("\nCerrando servidor...");
     process.exit(0);
   });
+
   startServer();
 }
 
