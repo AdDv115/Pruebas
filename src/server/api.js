@@ -7,8 +7,11 @@ import { Agente, AgenteStream } from "../Agente/agente.js";
 import { conectarDB } from "../db/mongo.js";
 
 const app = express();
+
+// Cliente de ElevenLabs usado por los endpoints de audio y token temporal.
 const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
+// Cache local de la conexión a la base para reutilizarla entre requests.
 let db;
 
 // Configuracion general del servidor y limites del body.
@@ -37,7 +40,7 @@ function esMensajeValido(mensaje) {
   return typeof mensaje === "string" && mensaje.trim().length >= 1 && mensaje.trim().length <= 2000;
 }
 
-// Lee la conversacion guardada o crea una vacia si todavia no existe.
+// Lee la conversación guardada o crea una vacía si todavía no existe.
 async function getConversacion(tipoUsuario) {
   const database = await getDB();
   const userId = getUserId(tipoUsuario);
@@ -50,7 +53,7 @@ async function getConversacion(tipoUsuario) {
   };
 }
 
-// Guarda solo los ultimos mensajes para que la conversacion no crezca sin limite.
+// Guarda solo los últimos mensajes para que la conversación no crezca sin límite.
 async function saveConversacion(database, userId, mensajes) {
   const mensajesGuardados = mensajes.slice(-20);
 
@@ -70,12 +73,12 @@ async function saveConversacion(database, userId, mensajes) {
   return mensajesGuardados;
 }
 
-// Agrega un mensaje al historial con el formato que usa el agente.
+// Agrega un mensaje con el formato compartido por la API y el agente.
 function addMensaje(mensajes, role, content) {
   mensajes.push({ role, content, timestamp: new Date() });
 }
 
-// Prepara el contexto comun que usan /chat y /chat/stream.
+// Prepara el contexto común que usan /chat y /chat/stream.
 async function prepararChat(mensaje, tipoUsuario = "free") {
   if (!esMensajeValido(mensaje)) {
     return { error: "Mensaje invalido (1-2000 caracteres)" };
@@ -90,7 +93,7 @@ async function prepararChat(mensaje, tipoUsuario = "free") {
   return { texto, tipoUsuario, esPrimerMensaje, ...conversacion };
 }
 
-// Envia eventos SSE al cliente para el chat en streaming.
+// Envía eventos SSE al cliente para el chat en streaming.
 function sendSSE(res, event, payload) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -113,6 +116,7 @@ function parseTtsBody(body) {
   }
 }
 
+// Endpoint de salud: comprueba que Express responde y que Mongo está disponible.
 app.get("/", async (req, res) => {
   try {
     await getDB();
@@ -123,6 +127,7 @@ app.get("/", async (req, res) => {
   }
 });
 
+// Respuesta tradicional: espera la generación completa y responde JSON.
 app.post("/api/chat", async (req, res) => {
   try {
     const { mensaje, tipoUsuario = "free" } = req.body || {};
@@ -149,6 +154,7 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// Streaming por SSE: envía fragmentos mientras Gemini sigue generando texto.
 app.post("/api/chat/stream", async (req, res) => {
   // Estas cabeceras dejan la conexion abierta para enviar texto por partes.
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -169,6 +175,7 @@ app.post("/api/chat/stream", async (req, res) => {
     let respuesta = "";
     sendSSE(res, "meta", { esPrimerMensaje: chat.esPrimerMensaje });
 
+    // Se reenvía cada delta listo para pintarse en la interfaz del cliente.
     for await (const delta of AgenteStream(chat.texto, chat.tipoUsuario, chat.mensajes, chat.esPrimerMensaje)) {
       if (!delta) continue;
       respuesta += delta;
@@ -196,6 +203,7 @@ app.post("/api/chat/stream", async (req, res) => {
   }
 });
 
+// Convierte texto a audio MP3 y lo devuelve en base64.
 app.post("/api/tts", async (req, res) => {
   try {
     const { text, voiceId = "pNInz6obpgDQGcFmaJgB" } = parseTtsBody(req.body);
@@ -205,7 +213,7 @@ app.post("/api/tts", async (req, res) => {
       return res.status(400).json({ error: "Texto invalido" });
     }
 
-    if (!process.env.ELEVENLABS_API_KEY) {
+    if (!process.env.ELEVENLABS_API_KEY2) {
       return res.status(500).json({ error: "Falta ELEVENLABS_API_KEY" });
     }
 
@@ -248,6 +256,7 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
+// Crea un token temporal para consumir agentes de ElevenLabs desde frontend.
 app.post("/api/get-token", async (req, res) => {
   try {
     const { agentId, tipoUsuario = "free" } = req.body || {};
@@ -280,6 +289,7 @@ app.post("/api/get-token", async (req, res) => {
   }
 });
 
+// Arranque local del servidor cuando no se despliega en Vercel.
 function startServer() {
   const PORT = process.env.PORT || 4000;
 
@@ -288,6 +298,7 @@ function startServer() {
   });
 }
 
+// Permite cerrar el proceso con Ctrl + C cuando se ejecuta localmente.
 if (process.env.VERCEL !== "1") {
   process.on("SIGINT", () => {
     console.log("\nCerrando servidor...");

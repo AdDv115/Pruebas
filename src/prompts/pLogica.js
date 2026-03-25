@@ -1,3 +1,4 @@
+// Instrucciones de decisión para que el modelo interprete intención y contexto.
 export const pLogica = `
 PLAN:
 1. Identifica intención: Saludo / Receta nueva / Búsqueda (región/tiempo/ingredientes) / Modificar anterior / Guardar / Sugerencia / Casual / Terminar

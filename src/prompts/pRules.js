@@ -1,3 +1,4 @@
+// Reglas rígidas que delimitan el comportamiento del agente en cada respuesta.
 export const pRules = `
 
 REGLAS INQUEBRANTABLES:

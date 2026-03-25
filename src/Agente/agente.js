@@ -3,16 +3,23 @@ import { pSistema } from "../prompts/pSistema.js";
 import { pLogica } from "../prompts/pLogica.js";
 import { pRules } from "../prompts/pRules.js";
 
+// Modelos candidatos para mantener compatibilidad entre entornos y versiones.
 const MODELOS_FALLBACK = [
   process.env.GEMINI_MODEL,
   "gemini-2.5-flash",
   "gemini-2.0-flash",
   "gemini-1.5-flash",
 ].filter((v, i, arr) => Boolean(v) && arr.indexOf(v) === i);
+
+// El modelo debe escribir la respuesta visible después de este marcador.
 const RESPUESTA_MARKER = "RESPUESTA:";
+
+// Reintentos básicos para errores temporales del proveedor.
 const MAX_RETRIES_PER_MODEL = 2;
 const RETRY_BASE_MS = 350;
 
+// Construye el prompt final combinando personalidad, reglas, historial y
+// el mensaje actual del usuario.
 function buildPrompt(
   mensajeUser,
   tipoUsuario = "free",
@@ -23,10 +30,12 @@ function buildPrompt(
     `[${msg.role.toUpperCase()}] ${msg.content}`
   ).join("\n\n");
 
+  // Cambia el tono de entrada si es el primer mensaje de la conversación.
   const contexto = esPrimeraCharla 
     ? "PRIMERA CHARLA: incluye saludo rolo" 
     : "CONTINÚA: directo sin saludo";
 
+  // tipoUsuario queda disponible para futuras variantes del prompt.
   const prompt = `
 [SISTEMA] ${pSistema}
 
@@ -44,6 +53,7 @@ function buildPrompt(
   return prompt;
 }
 
+// Elimina cualquier razonamiento o prefijo y deja solo la respuesta final.
 function extractRespuesta(texto = "") {
   const limpio = String(texto || "").trim();
   const indice = limpio.indexOf(RESPUESTA_MARKER);
@@ -51,6 +61,7 @@ function extractRespuesta(texto = "") {
   return limpio.slice(indice + RESPUESTA_MARKER.length).trim();
 }
 
+// Algunos modelos no soportan el método actual; en ese caso se cambia de modelo.
 function isModelNotSupportedError(error) {
   const status = error?.status;
   const message = String(error?.message || "").toLowerCase();
@@ -61,6 +72,7 @@ function isModelNotSupportedError(error) {
   );
 }
 
+// Errores pasajeros donde sí merece la pena esperar y reintentar.
 function isTransientModelError(error) {
   const status = error?.status;
   const message = String(error?.message || "").toLowerCase();
@@ -74,10 +86,12 @@ function isTransientModelError(error) {
   );
 }
 
+// Espera entre intentos para no golpear la API inmediatamente.
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Generación normal con fallback de modelos y reintentos por errores transitorios.
 async function generateWithFallback(prompt) {
   let lastError = null;
   for (const model of MODELOS_FALLBACK) {
@@ -113,6 +127,7 @@ async function generateWithFallback(prompt) {
   throw lastError || new Error("No hay modelos compatibles disponibles");
 }
 
+// Misma idea que generateWithFallback, pero para respuestas en streaming.
 async function generateStreamWithFallback(prompt) {
   let lastError = null;
   for (const model of MODELOS_FALLBACK) {
@@ -148,6 +163,7 @@ async function generateStreamWithFallback(prompt) {
   throw lastError || new Error("No hay modelos compatibles disponibles para stream");
 }
 
+// Devuelve una respuesta completa del agente lista para consumirse por la API.
 export async function Agente(
   mensajeUser,
   tipoUsuario = "free",
@@ -163,6 +179,7 @@ export async function Agente(
 
   const { response: respuesta } = await generateWithFallback(prompt);
 
+  // Gemini devuelve candidates con partes; aquí se consolidan en un solo texto.
   const candidate = respuesta.candidates?.[0];
   if (!candidate) {
     throw new Error("No se recibió ninguna candidate de Gemini");
@@ -177,6 +194,7 @@ export async function Agente(
   return extractRespuesta(texto);
 }
 
+// Generador asíncrono para emitir solo el texto nuevo en cada fragmento.
 export async function* AgenteStream(
   mensajeUser,
   tipoUsuario = "free",
@@ -195,6 +213,7 @@ export async function* AgenteStream(
   let emitted = 0;
 
   for await (const chunk of stream) {
+    // chunk.text contiene la salida parcial del modelo.
     const deltaRaw = chunk?.text || "";
     if (!deltaRaw) continue;
 

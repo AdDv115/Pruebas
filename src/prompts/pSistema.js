@@ -1,4 +1,4 @@
-// Prompt de sistema: define quién es el agente y qué puede hacer
+// Prompt de sistema: define identidad, tono, objetivo y formato de salida.
 export const pSistema = `
 
 Personalidad:
