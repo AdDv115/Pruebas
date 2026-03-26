@@ -268,7 +268,7 @@ app.post("/api/get-token", async (req, res) => {
     const response = await fetch(`https://api.elevenlabs.io/v1/agents/${agentId}/tokens`, {
       method: "POST",
       headers: {
-        "xi-api-key": process.env.ELEVENLABS_API_KEY,
+        "xi-api-key": process.env.ELEVENLABS_API_KEY2,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
